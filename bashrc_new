@@ -1,0 +1,10 @@
+# ===== Shizuku 一键激活 =====
+# 用法: szk [端口]   (不带参数=自动扫描; 也可 szk 12345 指定端口)
+alias szk='bash ~/shizuku-up.sh'
+# ============================
+
+# ===== MathPlot MCP 手动启动 =====
+# 用法: mathplot        前台启动（Ctrl+C 停止）
+#       mathplot -d     后台启动（nohup，日志 ~/mathplot_mcp.log）
+alias mathplot='bash ~/mathplot-up.sh'
+# ==================================
