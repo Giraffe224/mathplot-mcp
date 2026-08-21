@@ -19,8 +19,8 @@ Design notes:
 """
 
 import contextlib
-import io
 import inspect
+import io
 import json
 import os
 import re
@@ -1276,7 +1276,9 @@ class MCPHandler(BaseHTTPRequestHandler):
         # 原生客户端（RikkaHub）不发 Origin，无需 CORS；仅当来源为回环地址时才放行，
         # 便于浏览器里的 MCP Inspector 调试。
         origin = self.headers.get("Origin", "")
-        allowed = origin in ("", "null") or "127.0.0.1" in origin or "localhost" in origin
+        allowed = (
+            origin in ("", "null") or "127.0.0.1" in origin or "localhost" in origin
+        )
         if not allowed:
             return
         self.send_header("Access-Control-Allow-Origin", origin or "null")
