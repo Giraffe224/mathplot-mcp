@@ -16,3 +16,6 @@ plots/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 本地设计笔记（不入库）
+docs/原始设计记录.md
