@@ -59,7 +59,7 @@ fi
 # 后台模式
 if [ "$1" = "-d" ]; then
     echo "MathPlot MCP 后台启动中... 日志: ~/mathplot_mcp.log"
-    nohup python mathplot_mcp.py > mathplot_mcp.log 2>&1 &
+    nohup python mathplot_mcp.py >mathplot_mcp.log 2>&1 &
     echo "PID: $!"
     exit 0
 fi
