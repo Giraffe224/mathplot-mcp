@@ -6,6 +6,37 @@ MathPlot MCP — RikkaHub 数学绘图 & 控制工程 MCP 服务器
 
 ---
 
+## v1.6.0 — 2026-08-21 执行优化 backlog（P0+P1+P2，OO 绘图 API 重构）
+
+**背景**：执行 [docs/2026-08-21-代码评估与优化计划.md](docs/2026-08-21-代码评估与优化计划.md) 的 P0-P2 项（P3 按计划推迟单独做）。
+
+**改动**：
+
+- **绘图全面改用 OO API（P1-1，最核心）**：`plt.subplots()` → `Figure()` + `fig.subplots()`，
+  消除 pyplot 全局 figure 管理器的并发软肋（两个并发工具调用不再互相污染画面）；
+  `plot_root_locus` 从依赖隐式当前 axes 的 `ctrl.root_locus(plot=True)` 改为显式
+  `ctrl.root_locus_plot(sys, ax=ax)`（0.10.2 实测支持）；`plt.close` 全部移除
+  （OO figure 随引用释放）。
+- **工具异常落盘（P0-1）**：`tools/call` 的异常处理加 `traceback` 写日志，
+  绘图 bug 不再无痕。
+- **死代码清理（P0-2）**：删 `make_image_block()` + `base64` import；
+  删只写不读的 `SESSION_IDS`（DELETE 保持幂等 200）。
+- **请求体上限（P1-2）**：POST body >10MB 回 413。
+- **空闲连接超时（P1-3）**：handler `timeout=65`，僵死 keep-alive 连接自动释放线程。
+- **工具注册表合一（P2-1）**：名字校验元组 + 分发表 → `TOOL_FUNCS` 单一字典；
+  新增 `_check_tool_schemas()` 启动自检（schema 属性 ⊆ 签名、required ⊆ 无默认值），
+  schema/签名漂移在启动瞬间暴露（不再出现 x_label 幽灵参数这类问题）。
+- **描述段落去重（P2-2）**：9 处重复的图片引用指令抽成 `IMG_NOTE` 常量。
+- **样式（P2-3）**：`_cors` 条件简化；12 处 isError 样板统一用 `_err()`。
+
+**推迟（P3）**：启动延迟（先 bind 后导入）与 schema 自动生成——改动面大、
+收益一般，按计划单独做。
+
+**验证**：11 个工具全量回归通过（见下方回归记录）；RikkaHub 重连验证；
+并发请求测试（两个 plot_function 同时调用，图各归各）。
+
+---
+
 ## v1.5.0 — 2026-08-21 修复中文渲染 + 根治 RikkaHub 连接卡死
 
 **背景**：实测复现三大问题（完整诊断见

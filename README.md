@@ -14,6 +14,7 @@
 - **对话内显示图片**：工具返回文本携带 markdown 图片引用，模型嵌入回复后 RikkaHub 直接渲染；同时避免向模型服务商转发图片（设计决策见 [CHANGELOG](CHANGELOG.md) v1.3.0）
 - **中文渲染**：自动加载 Android 系统 Noto Sans CJK 字体（matplotlib 3.11 实测支持 ttc），中文标题/图例不再是方框
 - **连接稳定性**：GET /mcp 按规范返回 405（不支持推送流），规避 RikkaHub+kotlin-sdk 的 SSE 重连耗尽导致连接永久卡死的 bug（详见 [CHANGELOG](CHANGELOG.md) v1.5.0）；访问日志统一落盘 `~/mathplot_mcp.log`
+- **并发安全**：绘图使用 matplotlib OO API（`Figure`），无 pyplot 全局状态，并发工具调用互不干扰（v1.6.0）
 - **手动启动**：`mathplot` 一条命令启动，适合日常用机按需运行（runit 托管可选）
 
 ## 🛠 工具清单
@@ -123,7 +124,7 @@ mathplot_mcp.py  ── 纯 stdlib: http.server.ThreadingHTTPServer
 
 ```text
 mathplot-mcp/
-├── mathplot_mcp.py          # 服务器主程序（v1.5.0）
+├── mathplot_mcp.py          # 服务器主程序（v1.6.0）
 ├── mathplot-up.sh           # Termux 手动启动脚本
 ├── bashrc_new               # .bashrc 别名片段（mathplot 命令）
 ├── README.md

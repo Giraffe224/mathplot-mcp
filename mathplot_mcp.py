@@ -18,15 +18,16 @@ Design notes:
     phone needs no pydantic/uvicorn/Rust builds.
 """
 
-import base64
 import contextlib
 import io
+import inspect
 import json
 import os
 import re
 import sys
 import threading
 import time
+import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -35,7 +36,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.font_manager as _fm
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
 # ---------------------------------------------------------------------------
 # CJK 字体配置（修复中文渲染为方框的问题）
@@ -171,18 +172,10 @@ def safe_lambdify(expr, vars_list):
 # 渲染辅助
 # ---------------------------------------------------------------------------
 def render_png(fig) -> bytes:
+    """Figure（OO API，非 pyplot）→ PNG 字节。figure 随引用释放，无需显式 close。"""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=110)
-    plt.close(fig)
     return buf.getvalue()
-
-
-def make_image_block(png_bytes: bytes) -> dict:
-    return {
-        "type": "image",
-        "data": base64.b64encode(png_bytes).decode(),
-        "mimeType": "image/png",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +226,12 @@ def save_plot(png_bytes: bytes) -> str:
 
 
 INSTRUCTION = "【必须执行】在最终回复中展示图片：把下面这一行 markdown 原样包含到你的回复末尾，一字不改："
+
+# 工具描述里 8 处重复的“图片引用必须原样嵌入回复”段落（改文案只改这一处）
+IMG_NOTE = (
+    "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
+    "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。"
+)
 
 
 def plot_markdown(url_path: str) -> str:
@@ -285,7 +284,7 @@ def plot_function(
     x = Symbol("x")
     f, err = safe_parse(expr)
     if err:
-        return {"isError": True, "content": [{"type": "text", "text": err}]}
+        return _err(err)
     assert f is not None
     try:
         x_min = coerce_number(x_min, "x_min")
@@ -293,18 +292,16 @@ def plot_function(
         y_min = coerce_opt(y_min, "y_min")
         y_max = coerce_opt(y_max, "y_max")
     except ValueError as e:
-        return {"isError": True, "content": [{"type": "text", "text": str(e)}]}
+        return _err(str(e))
     if x_min >= x_max:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": "x_min 必须小于 x_max"}],
-        }
+        return _err("x_min 必须小于 x_max")
 
     xs = np.linspace(x_min, x_max, 2000)
     func = safe_lambdify(f, [x])
     ys = _safe_eval_ys(func, xs)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig = Figure(figsize=(8, 6))
+    ax = fig.subplots()
     ax.plot(xs, ys, lw=2.0)
     ax.axhline(0, color="gray", lw=0.8)
     ax.axvline(0, color="gray", lw=0.8)
@@ -362,34 +359,23 @@ def plot_multiple_functions(
     expressions, x_min: float = -10, x_max: float = 10, title: str = ""
 ):
     if not isinstance(expressions, list) or len(expressions) == 0:
-        return {
-            "isError": True,
-            "content": [
-                {"type": "text", "text": "expressions 需要是至少一个表达式的列表"}
-            ],
-        }
+        return _err("expressions 需要是至少一个表达式的列表")
     try:
         x_min = coerce_number(x_min, "x_min")
         x_max = coerce_number(x_max, "x_max")
     except ValueError as e:
-        return {"isError": True, "content": [{"type": "text", "text": str(e)}]}
+        return _err(str(e))
     if x_min >= x_max:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": "x_min 必须小于 x_max"}],
-        }
+        return _err("x_min 必须小于 x_max")
     x = Symbol("x")
     xs = np.linspace(x_min, x_max, 2000)
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig = Figure(figsize=(8, 6))
+    ax = fig.subplots()
     latexes = []
     for i, e in enumerate(expressions):
         f, err = safe_parse(e)
         if err:
-            plt.close(fig)
-            return {
-                "isError": True,
-                "content": [{"type": "text", "text": f"第{i + 1}个表达式: {err}"}],
-            }
+            return _err(f"第{i + 1}个表达式: {err}")
         assert f is not None
         func = safe_lambdify(f, [x])
         ys = _safe_eval_ys(func, xs)
@@ -429,7 +415,7 @@ def plot_implicit(
     x, y = symbols("x y")
     f, err = safe_parse(expr)
     if err:
-        return {"isError": True, "content": [{"type": "text", "text": err}]}
+        return _err(err)
     assert f is not None
     try:
         x_min = coerce_number(x_min, "x_min")
@@ -437,19 +423,13 @@ def plot_implicit(
         y_min = coerce_number(y_min, "y_min")
         y_max = coerce_number(y_max, "y_max")
     except ValueError as e:
-        return {"isError": True, "content": [{"type": "text", "text": str(e)}]}
+        return _err(str(e))
     if x_min >= x_max or y_min >= y_max:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": "范围参数不合法"}],
-        }
+        return _err("范围参数不合法")
     try:
         func = safe_lambdify(f, [x, y])
     except Exception as e:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": f"无法对隐式方程求值: {e}"}],
-        }
+        return _err(f"无法对隐式方程求值: {e}")
 
     nx = ny = 400
     xs = np.linspace(x_min, x_max, nx)
@@ -459,7 +439,8 @@ def plot_implicit(
         Z = np.asarray(func(X, Y), dtype=float)
     Z = np.where(np.isfinite(Z), Z, np.nan)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig = Figure(figsize=(8, 6))
+    ax = fig.subplots()
     ax.contour(X, Y, Z, levels=[0.0], colors="C0", linewidths=2)
     ax.axhline(0, color="gray", lw=0.8)
     ax.axvline(0, color="gray", lw=0.8)
@@ -484,7 +465,7 @@ def analyze_formula(expr: str):
     x = Symbol("x")
     f, err = safe_parse(expr)
     if err:
-        return {"isError": True, "content": [{"type": "text", "text": err}]}
+        return _err(err)
     assert f is not None
     lines = [f"## 函数分析: y = {latex(f)}", f"原式: {expr}", ""]
 
@@ -660,11 +641,12 @@ def plot_root_locus(transfer_function: str, title: str = ""):
         return _err(err)
     assert sys is not None and expr is not None
     ctrl = _get_ctrl()
-    fig, ax = plt.subplots(figsize=(8, 7))
+    fig = Figure(figsize=(8, 7))
+    ax = fig.subplots()
     try:
-        ctrl.root_locus(sys, plot=True, grid=False)
+        # 显式传 ax（OO API），避免依赖 pyplot 当前 axes 的隐式全局状态
+        ctrl.root_locus_plot(sys, ax=ax, grid=False)
     except Exception as e:
-        plt.close(fig)
         return _err(f"根轨迹绘制失败: {e}")
     ax.axhline(0, color="gray", lw=0.8)
     ax.axvline(0, color="gray", lw=0.8)
@@ -711,7 +693,8 @@ def plot_bode(
         mag_db = 20.0 * np.log10(np.maximum(mag, 1e-12))
     phase_deg = np.degrees(phase)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+    fig = Figure(figsize=(8, 7))
+    ax1, ax2 = fig.subplots(2, 1, sharex=True)
     ax1.semilogx(wout, mag_db, lw=2)
     ax1.set_ylabel("Magnitude (dB)")
     ax1.grid(True, which="both", alpha=0.3)
@@ -755,13 +738,13 @@ def plot_nyquist(transfer_function: str, title: str = ""):
         enc = int(resp.count)
     except Exception as e:
         return _err(f"奈奎斯特图计算失败: {e}")
-    fig, ax = plt.subplots(figsize=(7, 7))
+    fig = Figure(figsize=(7, 7))
+    ax = fig.subplots()
     try:
         # control 的规范绘图：正确的 G(jω) 曲线 + 虚轴极点凹陷弧 + 临界点标记
         resp.plot(ax=ax)
         ax.set_title(title or "Nyquist Diagram")
     except Exception as e:
-        plt.close(fig)
         return _err(f"奈奎斯特图绘制失败: {e}")
     poles = np.asarray(sys.poles(), dtype=complex)
     try:
@@ -792,11 +775,11 @@ def plot_nichols(transfer_function: str, title: str = ""):
         return _err(err)
     assert sys is not None and expr is not None
     ctrl = _get_ctrl()
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig = Figure(figsize=(8, 6))
+    ax = fig.subplots()
     try:
         ctrl.nichols_plot(sys, ax=ax, grid=True)
     except Exception as e:
-        plt.close(fig)
         return _err(f"尼科尔斯图绘制失败: {e}")
     ax.set_title(title or "Nichols Chart")
     text = f"已绘制尼科尔斯图: G(s) = {latex(expr)}（原式: {transfer_function}）\n（横轴相位 deg，纵轴幅值 dB）"
@@ -829,7 +812,8 @@ def plot_step_response(transfer_function: str, t_end: float = 10.0, title: str =
         return _err(f"阶跃响应计算失败: {e}")
     t = np.asarray(resp.t, dtype=float)
     y = np.asarray(resp.y, dtype=float).reshape(-1)
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig = Figure(figsize=(8, 5))
+    ax = fig.subplots()
     ax.plot(t, y, lw=2)
     ax.axhline(0, color="gray", lw=0.8)
     ax.grid(True, alpha=0.3)
@@ -860,7 +844,8 @@ def plot_pzmap(transfer_function: str, title: str = ""):
     assert sys is not None and expr is not None
     poles = np.asarray(sys.poles(), dtype=complex)
     zeros = np.asarray(sys.zeros(), dtype=complex)
-    fig, ax = plt.subplots(figsize=(7, 7))
+    fig = Figure(figsize=(7, 7))
+    ax = fig.subplots()
     if zeros.size:
         ax.plot(
             np.real(zeros), np.imag(zeros), "o", mfc="none", ms=10, mew=2, label="Zeros"
@@ -943,15 +928,14 @@ def analyze_transfer_function(transfer_function: str):
 # MCP Streamable HTTP 服务器
 # ---------------------------------------------------------------------------
 SERVER_NAME = "MathPlotMCP"
-SERVER_VERSION = "1.5.0"
+SERVER_VERSION = "1.6.0"
 TOOLS = [
     {
         "name": "plot_function",
         "description": "绘制一元函数 y=f(x) 的图像，返回 PNG 图片和文本摘要。"
         "expr 示例: 'sin(x)', 'x**2', 'exp(-x**2/10)', 'log(x)', '1/(1+x**2)'。"
         "支持 + - * / ** 和常见函数 sin cos tan exp log sqrt abs pi e。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -971,8 +955,7 @@ TOOLS = [
     {
         "name": "plot_multiple_functions",
         "description": "在同一坐标系绘制多个函数对比，返回 PNG 图片和文本摘要。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -991,8 +974,7 @@ TOOLS = [
     {
         "name": "plot_implicit",
         "description": "绘制隐式方程（如圆 x**2+y**2-1=0、椭圆、双曲线），返回 PNG 图片和文本摘要。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1023,8 +1005,7 @@ TOOLS = [
         "name": "plot_root_locus",
         "description": "根轨迹图（root locus）。transfer_function 为开环传递函数 G(s) 字符串，"
         "如 '(s+1)/(s*(s^2+s+1))'、'1/(s*(s+2)*(s+4))'、'k/(s^2+2*s+2)'。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1041,8 +1022,7 @@ TOOLS = [
         "name": "plot_bode",
         "description": "波特图（Bode）：幅频 + 相频双面板，频率轴 rad/s。"
         "transfer_function 示例 '(s+1)/(s^2+3*s+2)'、'10/(s*(s+1))'。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1067,8 +1047,7 @@ TOOLS = [
         "description": "奈奎斯特图（Nyquist），标注临界点 -1，并按奈奎斯特判据给出闭环稳定性结论。"
         "支持可选 title 参数。"
         "transfer_function 示例 '1/(s*(s+1)*(s+2))'、'(s+2)/(s^2-1)'。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1085,8 +1064,7 @@ TOOLS = [
         "description": "尼科尔斯图（Nichols Chart），含 M/N 等值线网格，可直接读出闭环幅值/相位。"
         "支持可选 title 参数。"
         "transfer_function 示例 '10/(s*(s+1))'。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1103,8 +1081,7 @@ TOOLS = [
         "description": "单位阶跃响应曲线（step response），附带稳态值与超调量。"
         "支持可选 title 参数。"
         "transfer_function 示例 '10/(s^2+2*s+10)'、'1/(s+1)'。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1122,8 +1099,7 @@ TOOLS = [
         "description": "零极点图（Pole-Zero Map），判断开环稳定性。"
         "支持可选 title 参数。"
         "transfer_function 示例 '(s+1)/(s^2+3*s+2)'。"
-        "重要：返回文本中会包含一行以 ![plot]( 开头的 markdown 图片引用，"
-        "你必须在最终回复中原样包含这一行（一字不改），这样图片才能显示在对话中。",
+        f"{IMG_NOTE}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1151,6 +1127,52 @@ TOOLS = [
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# 工具注册表：名字 → 实现函数（单一数据源，配合启动自检保证 schema/签名不漂移）
+# ---------------------------------------------------------------------------
+TOOL_FUNCS = {
+    "plot_function": plot_function,
+    "plot_multiple_functions": plot_multiple_functions,
+    "plot_implicit": plot_implicit,
+    "analyze_formula": analyze_formula,
+    "plot_root_locus": plot_root_locus,
+    "plot_bode": plot_bode,
+    "plot_nyquist": plot_nyquist,
+    "plot_nichols": plot_nichols,
+    "plot_step_response": plot_step_response,
+    "plot_pzmap": plot_pzmap,
+    "analyze_transfer_function": analyze_transfer_function,
+}
+
+
+def _check_tool_schemas():
+    """启动自检：TOOLS 的 schema 必须与函数签名一致。
+
+    校验两条：
+    1. schema 里的每个属性必须存在于函数签名（防止手写 schema 与签名漂移，
+       例如曾经出现过的 x_label 幽灵参数）；
+    2. required 里的参数必须是签名中无默认值的参数（required 声明了就不能有默认值）。
+    校验失败直接抛异常，服务拒绝启动——错误在启动瞬间暴露而非用户对话中。
+    """
+    if set(TOOL_FUNCS) != {t["name"] for t in TOOLS}:
+        raise RuntimeError(
+            "TOOL_FUNCS 与 TOOLS 名字集合不一致: "
+            f"funcs-only={set(TOOL_FUNCS) - {t['name'] for t in TOOLS}}, "
+            f"schema-only={ {t['name'] for t in TOOLS} - set(TOOL_FUNCS) }"
+        )
+    for t in TOOLS:
+        name = t["name"]
+        sig = inspect.signature(TOOL_FUNCS[name])
+        props = t["inputSchema"].get("properties", {})
+        for p in props:
+            if p not in sig.parameters:
+                raise RuntimeError(f"工具 {name}: schema 含参数 {p}，但函数签名没有")
+        for r in t["inputSchema"].get("required", []):
+            param = sig.parameters.get(r)
+            if param is None or param.default is not inspect.Parameter.empty:
+                raise RuntimeError(f"工具 {name}: required 参数 {r} 不应有默认值")
 
 
 def _tool_result(payload):
@@ -1189,44 +1211,22 @@ def handle_jsonrpc(msg):
         params = msg.get("params") or {}
         name = params.get("name", "")
         args = params.get("arguments") or {}
-        if name not in (
-            "plot_function",
-            "plot_multiple_functions",
-            "plot_implicit",
-            "analyze_formula",
-            "plot_root_locus",
-            "plot_bode",
-            "plot_nyquist",
-            "plot_nichols",
-            "plot_step_response",
-            "plot_pzmap",
-            "analyze_transfer_function",
-        ):
+        if name not in TOOL_FUNCS:
             return {
                 "jsonrpc": "2.0",
                 "id": mid,
                 "error": {"code": -32602, "message": f"未知工具: {name}"},
             }, False
         try:
-            result = {
-                "plot_function": plot_function,
-                "plot_multiple_functions": plot_multiple_functions,
-                "plot_implicit": plot_implicit,
-                "analyze_formula": analyze_formula,
-                "plot_root_locus": plot_root_locus,
-                "plot_bode": plot_bode,
-                "plot_nyquist": plot_nyquist,
-                "plot_nichols": plot_nichols,
-                "plot_step_response": plot_step_response,
-                "plot_pzmap": plot_pzmap,
-                "analyze_transfer_function": analyze_transfer_function,
-            }[name](**args)
+            result = TOOL_FUNCS[name](**args)
         except TypeError as e:
             result = {
                 "isError": True,
                 "content": [{"type": "text", "text": f"参数错误: {e}"}],
             }
         except Exception as e:
+            # 服务端必须留痕：绘图类 bug 排障靠日志而不是靠猜（P0 backlog）
+            _log_line(f"工具 {name} 调用失败: {traceback.format_exc()}")
             result = {
                 "isError": True,
                 "content": [{"type": "text", "text": f"执行出错: {e}"}],
@@ -1244,12 +1244,10 @@ def handle_jsonrpc(msg):
     }, False
 
 
-SESSION_IDS = set()
-SESSION_IDS_MAX = 1024  # 会话 ID 不参与鉴权，仅容量控制：超限整体清空即可
-
 # 访问/错误日志统一落盘（修复：前台运行时日志只在终端，排查连接问题只能靠 logcat）
 LOG_FILE = os.path.join(os.path.expanduser("~"), "mathplot_mcp.log")
 LOG_FILE_MAX = 2 * 1024 * 1024  # 超过 2MB 时滚动为 .old
+MAX_BODY_BYTES = 10 * 1024 * 1024  # POST 请求体上限 10MB
 _LOG_LOCK = threading.Lock()
 
 
@@ -1268,6 +1266,8 @@ def _log_line(msg: str):
 class MCPHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "MathPlotMCP/1.0"
+    # 空闲 keep-alive 连接超过 65s 自动关闭：否则每个僵死连接占一个线程不释放（P1 backlog）
+    timeout = 65
 
     def log_message(self, format, *args):
         _log_line(f"[{self.address_string()}] {format % args}")
@@ -1276,11 +1276,7 @@ class MCPHandler(BaseHTTPRequestHandler):
         # 原生客户端（RikkaHub）不发 Origin，无需 CORS；仅当来源为回环地址时才放行，
         # 便于浏览器里的 MCP Inspector 调试。
         origin = self.headers.get("Origin", "")
-        allowed = (
-            ("" or origin) in ("", "null")
-            or "127.0.0.1" in origin
-            or "localhost" in origin
-        )
+        allowed = origin in ("", "null") or "127.0.0.1" in origin or "localhost" in origin
         if not allowed:
             return
         self.send_header("Access-Control-Allow-Origin", origin or "null")
@@ -1365,15 +1361,11 @@ class MCPHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_DELETE(self):
-        # MCP 会话终止（Streamable HTTP 规范：DELETE /mcp）。会话本就不校验，幂等回 200。
+        # MCP 会话终止（Streamable HTTP 规范：DELETE /mcp）。服务端不维护会话状态，幂等回 200。
         path = urlparse(self.path).path
         if path != "/mcp":
             self._send_json({"error": "not found"}, status=404)
             return
-        session = self.headers.get("Mcp-Session-Id")
-        if session:
-            with contextlib.suppress(KeyError):
-                SESSION_IDS.discard(session)
         self.send_response(200)
         self._cors()
         self.send_header("Content-Length", "0")
@@ -1389,6 +1381,16 @@ class MCPHandler(BaseHTTPRequestHandler):
         )  # 供 /plots 图片 URL 使用（客户端怎么连就怎么取图）
         try:
             length = int(self.headers.get("Content-Length", 0))
+            # 请求体上限：本地工具参数都很小，10MB 足够且防异常客户端打爆内存（P1 backlog）
+            if length > MAX_BODY_BYTES:
+                self._send_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32600, "message": "请求体过大"},
+                    },
+                    status=413,
+                )
+                return
             raw = self.rfile.read(length)
             msg = json.loads(raw.decode("utf-8"))
         except Exception as e:
@@ -1401,12 +1403,7 @@ class MCPHandler(BaseHTTPRequestHandler):
             )
             return
 
-        session = self.headers.get("Mcp-Session-Id")
-        if not session:
-            session = str(uuid.uuid4())
-        SESSION_IDS.add(session)
-        if len(SESSION_IDS) > SESSION_IDS_MAX:
-            SESSION_IDS.clear()
+        session = self.headers.get("Mcp-Session-Id") or str(uuid.uuid4())
 
         try:
             resp, is_notif = handle_jsonrpc(msg)
@@ -1433,6 +1430,7 @@ def main():
         port = int(os.environ.get("MCP_PORT", "8000"))
     except ValueError:
         port = 8000
+    _check_tool_schemas()  # 启动自检：schema/签名漂移立即暴露，而不是在用户对话里暴露
     srv = ThreadingHTTPServer((host, port), MCPHandler)
     print(f"MathPlot MCP listening on http://{host}:{port}/mcp", flush=True)
     print(f"Tools: {[t['name'] for t in TOOLS]}", flush=True)
