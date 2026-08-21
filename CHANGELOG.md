@@ -6,6 +6,37 @@ MathPlot MCP — RikkaHub 数学绘图 & 控制工程 MCP 服务器
 
 ---
 
+## v1.5.0 — 2026-08-21 修复中文渲染 + 根治 RikkaHub 连接卡死
+
+**背景**：实测复现三大问题（完整诊断见
+[docs/2026-08-21-诊断报告-连接与中文渲染.md](docs/2026-08-21-诊断报告-连接与中文渲染.md)）：
+中文渲染为方框；RikkaHub 先于 MCP 启动时无法连接；服务器中断 >30s 后 RikkaHub 永久卡死。
+
+**修复**：
+
+- **中文渲染**：启动时从 Android 系统字体目录加载 `NotoSansCJK-Regular.ttc`
+  （matplotlib 3.11 实测支持 ttc），rcParams 回退链 `Noto Sans CJK SC → DejaVu Sans`
+  （3.6+ 逐字形回退，西文/数学符号仍由 DejaVu 渲染）；加载失败优雅降级。
+  同时 `axes.unicode_minus = False`（CJK 字体缺 U+2212）。
+- **GET /mcp 改返回 405**（规范允许：不支持服务器推送流）。这是连接稳定性的关键：
+  kotlin-sdk 会对 GET /mcp 建常驻 SSE 流，服务器重启后 SDK 内部重连耗尽报
+  "Maximum reconnection attempts exceeded"，而 RikkaHub 的 `isSseStreamGiveUpError()`
+  会特意忽略该错误 → 永久卡死。返回 405 时 SDK 进入 "stream disabled" 模式，
+  不建流不报错；配合 RikkaHub callTool 的 `connectedConfig==null` 兜底重连，
+  「RikkaHub 先启动」和「服务器中途重启」两个场景都能在下一条消息自愈。
+  本服务全部工具均为请求-响应式，无需推送流；附带消灭了每客户端一条常驻线程。
+- **访问日志统一落盘** `~/mathplot_mcp.log`（带时间戳，>2MB 滚动为 .old）：
+  之前前台运行时日志只在终端，排查连接问题只能靠 logcat。
+- **杂项**：`SESSION_IDS` 封顶 1024 防泄漏；处理 `DELETE /mcp`（幂等回 200）；
+  initialize 响应附 instructions 提示中文 title 可用；代码风格统一
+  `contextlib.suppress`。
+
+**未采纳（用户决策）**：服务器常驻方案（runit 自启 / wake-lock / Termux:Boot /
+禁用幽灵进程杀手）——本机为日常用机，保持按需手动启动（`mathplot`），
+依赖上述自愈能力保证体验。
+
+---
+
 ## v1.4.1 — 2026-08-13 修复奈奎斯特曲线绘制 bug
 
 **问题**：`plot_nyquist` 画出来的是一条竖线（实部≈0），不是真实奈奎斯特曲线。

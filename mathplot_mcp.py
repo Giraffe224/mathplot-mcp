@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -33,7 +34,38 @@ from urllib.parse import urlparse
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.font_manager as _fm
 import matplotlib.pyplot as plt
+
+# ---------------------------------------------------------------------------
+# CJK 字体配置（修复中文渲染为方框的问题）
+#
+# Termux 的 matplotlib 只带 DejaVu/STIX 等西文字体，无任何 CJK 字形；
+# Android 系统字体 /system/fonts/NotoSansCJK-Regular.ttc 全局可读，
+# matplotlib 3.11 实测可直接 addfont() 加载（注册 Noto Sans CJK SC 等 5 个字体面）。
+# 全部加载失败时优雅降级回 DejaVu（英文图表不受影响）。
+# ---------------------------------------------------------------------------
+for _font_path in (
+    "/system/fonts/NotoSansCJK-Regular.ttc",
+    "/system/fonts/NotoSerifCJK-Regular.ttc",
+    "/system/fonts/DroidSansFallbackFull.ttf",  # 老机型兜底
+):
+    if os.path.exists(_font_path):
+        with contextlib.suppress(Exception):
+            _fm.fontManager.addfont(_font_path)
+
+_CJK_FONT = next(
+    (f.name for f in _fm.fontManager.ttflist if f.name == "Noto Sans CJK SC"),
+    None,
+)
+matplotlib.rcParams["font.family"] = "sans-serif"
+# matplotlib 3.6+ 支持逐字形回退：中文用 Noto CJK，西文/数学符号仍由 DejaVu 渲染
+matplotlib.rcParams["font.sans-serif"] = (
+    [_CJK_FONT, "DejaVu Sans"] if _CJK_FONT else ["DejaVu Sans"]
+)
+# CJK 字体缺 U+2212（数学负号），改用 ASCII 减号避免告警
+matplotlib.rcParams["axes.unicode_minus"] = False
+
 import numpy as np
 from sympy import (
     Eq,
@@ -188,7 +220,7 @@ def save_plot(png_bytes: bytes) -> str:
             fh.write(png_bytes)
     except OSError as e:
         raise RuntimeError(f"无法保存图片: {e}") from e
-    try:
+    with contextlib.suppress(OSError):
         files = sorted(
             (p for p in os.listdir(PLOTS_DIR) if p.endswith(".png")),
             key=lambda p: os.path.getmtime(os.path.join(PLOTS_DIR, p)),
@@ -197,8 +229,6 @@ def save_plot(png_bytes: bytes) -> str:
         for old in files[MAX_PLOTS:]:
             with contextlib.suppress(OSError):
                 os.remove(os.path.join(PLOTS_DIR, old))
-    except OSError:
-        pass
     return f"/plots/{name}"
 
 
@@ -311,7 +341,7 @@ def plot_function(
         summary_lines.append(
             f"y 实际取值范围(约): [{fmin:.4g}, {fmax:.4g}]（图内已裁剪异常尖峰）"
         )
-    try:
+    with contextlib.suppress(Exception):
         import sympy as sm
 
         den = sm.denom(f)
@@ -320,8 +350,6 @@ def plot_function(
             summary_lines.append(
                 f"无定义点: x ∈ {[float(v) for v in bad if v.is_number]}"
             )
-    except Exception:
-        pass
     summary_lines.append("")
     summary_lines.append("")
     summary_lines.append(INSTRUCTION)
@@ -468,20 +496,16 @@ def analyze_formula(expr: str):
 
     sf = f
     fd = f
-    try:
+    with contextlib.suppress(Exception):
         sf = simplify(f)
         if sf != f:
             add("化简", [f"simplify: y = {latex(sf)}"])
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         fd = factor(f)
         if fd != f and fd != sf:
             add("因式分解", [f"factor: y = {latex(fd)}"])
-    except Exception:
-        pass
     # 定义域
-    try:
+    with contextlib.suppress(Exception):
         import sympy as sm
 
         undef = []
@@ -503,10 +527,8 @@ def analyze_formula(expr: str):
             add("定义域限制", undef)
         else:
             add("定义域", ["x ∈ ℝ（所有实数）"])
-    except Exception:
-        pass
     # 奇偶性 / 周期性
-    try:
+    with contextlib.suppress(Exception):
         import sympy as sm
 
         even = sm.simplify(f.subs(x, -x) - f) == 0
@@ -522,45 +544,35 @@ def analyze_formula(expr: str):
         if per:
             parity.append(f"周期函数，最小正周期 ≈ {float(per):.4g}")
         add("对称性与周期性", parity)
-    except Exception:
-        pass
     # 导数与驻点
-    try:
+    with contextlib.suppress(Exception):
         import sympy as sm
 
         d = sm.diff(f, x)
         crit = []
-        try:
-            sols = sm.solve(d, x)
-            for v in sols:
-                if v.is_real:
-                    try:
-                        yv = float(f.subs(x, v))
-                        crit.append(f"x = {float(v):.4g} 处 y = {yv:.4g}")
-                    except Exception:
-                        crit.append(f"x = {float(v):.4g}")
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+                sols = sm.solve(d, x)
+                for v in sols:
+                    if v.is_real:
+                        try:
+                            yv = float(f.subs(x, v))
+                            crit.append(f"x = {float(v):.4g} 处 y = {yv:.4g}")
+                        except Exception:
+                            crit.append(f"x = {float(v):.4g}")
         if crit:
             add("驻点（f'(x)=0）", crit[:8])
         lines.insert(0, f"导数: f'(x) = {latex(d)}")
-    except Exception:
-        pass
     # 极限
-    try:
+    with contextlib.suppress(Exception):
         import sympy as sm
 
         lims = []
         for infp in (sm.oo, -sm.oo):
-            try:
-                v = sm.limit(f, x, infp)
-                lims.append(f"x→{infp}: {v if v.is_number else latex(v)}")
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                    v = sm.limit(f, x, infp)
+                    lims.append(f"x→{infp}: {v if v.is_number else latex(v)}")
         if lims:
             add("无穷远极限", lims)
-    except Exception:
-        pass
 
     return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 
@@ -659,14 +671,12 @@ def plot_root_locus(transfer_function: str, title: str = ""):
     ax.set_title(title or "Root Locus")
     ax.grid(True, alpha=0.3)
     text = f"已绘制根轨迹: G(s) = {latex(expr)}（原式: {transfer_function}）"
-    try:
+    with contextlib.suppress(Exception):
         poles = np.asarray(sys.poles(), dtype=complex)
         zeros = np.asarray(sys.zeros(), dtype=complex)
         text += "\n开环极点: " + ", ".join(_fmt_cplx(p) for p in poles)
         if zeros.size:
             text += "\n开环零点: " + ", ".join(_fmt_cplx(z) for z in zeros)
-    except Exception:
-        pass
     return _ctrl_result(text, fig)
 
 
@@ -712,7 +722,7 @@ def plot_bode(
     fig.suptitle(title or "Bode Diagram")
 
     text = f"已绘制波特图: G(s) = {latex(expr)}（原式: {transfer_function}）"
-    try:
+    with contextlib.suppress(Exception):
         gm, pm, wg, wp = ctrl.margin(sys)
         if np.isfinite(pm):
             text += f"\n相位裕度 PM: {pm:.2f}°" + (
@@ -725,8 +735,6 @@ def plot_bode(
             )
         else:
             text += "\n增益裕度 GM: ∞（相位曲线不穿越 -180°）"
-    except Exception:
-        pass
     return _ctrl_result(text, fig)
 
 
@@ -792,14 +800,12 @@ def plot_nichols(transfer_function: str, title: str = ""):
         return _err(f"尼科尔斯图绘制失败: {e}")
     ax.set_title(title or "Nichols Chart")
     text = f"已绘制尼科尔斯图: G(s) = {latex(expr)}（原式: {transfer_function}）\n（横轴相位 deg，纵轴幅值 dB）"
-    try:
+    with contextlib.suppress(Exception):
         gm, pm, wg, wp = ctrl.margin(sys)
         if np.isfinite(pm):
             text += f"\n相位裕度 PM: {pm:.2f}°"
         if np.isfinite(gm):
             text += f"\n增益裕度 GM: {gm:.4g}（线性）≈ {20.0 * np.log10(max(float(gm), 1e-12)):.2f} dB"
-    except Exception:
-        pass
     return _ctrl_result(text, fig)
 
 
@@ -833,13 +839,11 @@ def plot_step_response(transfer_function: str, t_end: float = 10.0, title: str =
     final = 0.0
     peak = 0.0
     tpk = 0.0
-    try:
+    with contextlib.suppress((TypeError, ValueError)):
         if y.size:
             final = float(y[-1])
             peak = float(np.max(y))
             tpk = float(t[np.argmax(y)])
-    except (TypeError, ValueError):
-        pass
     overshoot = (peak - final) / final if abs(final) > 1e-12 else 0.0
     text = f"已绘制阶跃响应: G(s) = {latex(expr)}（原式: {transfer_function}）"
     text += f"\n稳态值: {final:.4g}"
@@ -900,7 +904,7 @@ def analyze_transfer_function(transfer_function: str):
     lines.append("")
     lines.append(f"**开环稳定性**: {_stability_text(poles)}")
     if bool(np.all(np.real(poles) < 0)):
-        try:
+        with contextlib.suppress(Exception):
             gm, pm, wg, wp = ctrl.margin(sys)
             parts = []
             if np.isfinite(pm):
@@ -917,18 +921,14 @@ def analyze_transfer_function(transfer_function: str):
                 parts.append("增益裕度 GM = ∞（相位不穿越 -180°）")
             if parts:
                 lines.append("**稳定裕度**: " + "；".join(parts))
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             wn, zeta, dp = ctrl.damp(sys)
             pairs = [
                 f"ω_n = {w:.4g} rad/s, ζ = {z:.4g}"
                 for w, z in zip(np.asarray(wn), np.asarray(zeta), strict=True)
             ]
             lines.append("**二阶模态**: " + "；".join(pairs))
-        except Exception:
-            pass
-    try:
+    with contextlib.suppress(Exception):
         dc = ctrl.dcgain(sys)
         dc_v = float(np.real(dc)) if np.isfinite(np.real(dc)) else None
         lines.append("")
@@ -936,8 +936,6 @@ def analyze_transfer_function(transfer_function: str):
             lines.append(f"**直流增益 G(0)**: {dc_v:.4g}")
         else:
             lines.append("**直流增益 G(0)**: ∞（含积分环节，阶跃输入稳态输出发散）")
-    except Exception:
-        pass
     return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 
 
@@ -945,7 +943,7 @@ def analyze_transfer_function(transfer_function: str):
 # MCP Streamable HTTP 服务器
 # ---------------------------------------------------------------------------
 SERVER_NAME = "MathPlotMCP"
-SERVER_VERSION = "1.4.1"
+SERVER_VERSION = "1.5.0"
 TOOLS = [
     {
         "name": "plot_function",
@@ -1174,6 +1172,10 @@ def handle_jsonrpc(msg):
                 "protocolVersion": proto,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                "instructions": (
+            "数学与控制工程绘图工具集。表达式中 ^ 表示乘方；"
+            "各绘图工具的 title 参数支持中文，建议用中文描述图表。"
+                ),
             },
         }, False
 
@@ -1243,6 +1245,27 @@ def handle_jsonrpc(msg):
 
 
 SESSION_IDS = set()
+SESSION_IDS_MAX = 1024  # 会话 ID 不参与鉴权，仅容量控制：超限整体清空即可
+
+# 访问/错误日志统一落盘（修复：前台运行时日志只在终端，排查连接问题只能靠 logcat）
+LOG_FILE = os.path.join(os.path.expanduser("~"), "mathplot_mcp.log")
+LOG_FILE_MAX = 2 * 1024 * 1024  # 超过 2MB 时滚动为 .old
+_LOG_LOCK = threading.Lock()
+
+
+def _log_line(msg: str):
+    """写一行日志：stderr + ~/mathplot_mcp.log 双路。永不抛异常。"""
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    with _LOG_LOCK:
+        with contextlib.suppress(OSError):
+            if (
+                os.path.exists(LOG_FILE)
+                and os.path.getsize(LOG_FILE) > LOG_FILE_MAX
+            ):
+                os.replace(LOG_FILE, LOG_FILE + ".old")
+            with open(LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        sys.stderr.write(line + "\n")
 
 
 class MCPHandler(BaseHTTPRequestHandler):
@@ -1250,7 +1273,7 @@ class MCPHandler(BaseHTTPRequestHandler):
     server_version = "MathPlotMCP/1.0"
 
     def log_message(self, format, *args):
-        sys.stderr.write(f"[{self.address_string()}] {format % args}\n")
+        _log_line(f"[{self.address_string()}] {format % args}")
 
     def _cors(self):
         # 原生客户端（RikkaHub）不发 Origin，无需 CORS；仅当来源为回环地址时才放行，
@@ -1305,23 +1328,21 @@ class MCPHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/mcp":
-            # SSE 流（用于服务端通知；客户端可选择性使用）
-            try:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "keep-alive")
-                self._cors()
-                self.end_headers()
-                self.wfile.write(b"event: endpoint\r\ndata: {}\r\n\r\n")
-                self.wfile.flush()
-                # 心跳，保持连接
-                while True:
-                    self.wfile.write(b": keep-alive\r\n\r\n")
-                    self.wfile.flush()
-                    threading.Event().wait(15)
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass
+            # 返回 405（规范允许：不支持服务器推送流）。
+            #
+            # 为什么不提供 SSE 长连接（kotlin-sdk/RikkaHub 实测，2026-08-21 诊断）：
+            # SDK 会对 GET /mcp 建常驻 SSE 流；服务器重启后 SDK 内部重连 ~3 次耗尽，
+            # 报 "Maximum reconnection attempts exceeded"，而 RikkaHub 的
+            # isSseStreamGiveUpError() 会特意忽略该错误且不再重连，
+            # session.client 残留导致 callTool 也不走重连分支 → 连接永久卡死。
+            # 返回 405 时 SDK 进入 "stream disabled" 模式：不建流、不报错，
+            # 服务器恢复后下一次 POST 即可正常工作，并由 RikkaHub 标准重连兜底。
+            # 本服务全部工具均为请求-响应式，无需服务器推送。
+            self.send_response(405)
+            self.send_header("Allow", "POST, DELETE, OPTIONS")
+            self._cors()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
         self._send_json({"error": "not found"}, status=404)
 
@@ -1345,6 +1366,21 @@ class MCPHandler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
         self.wfile.write(data)
+
+    def do_DELETE(self):
+        # MCP 会话终止（Streamable HTTP 规范：DELETE /mcp）。会话本就不校验，幂等回 200。
+        path = urlparse(self.path).path
+        if path != "/mcp":
+            self._send_json({"error": "not found"}, status=404)
+            return
+        session = self.headers.get("Mcp-Session-Id")
+        if session:
+            with contextlib.suppress(KeyError):
+                SESSION_IDS.discard(session)
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self):
         path = urlparse(self.path).path
@@ -1372,6 +1408,8 @@ class MCPHandler(BaseHTTPRequestHandler):
         if not session:
             session = str(uuid.uuid4())
         SESSION_IDS.add(session)
+        if len(SESSION_IDS) > SESSION_IDS_MAX:
+            SESSION_IDS.clear()
 
         try:
             resp, is_notif = handle_jsonrpc(msg)

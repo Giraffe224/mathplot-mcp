@@ -12,8 +12,9 @@
 - **纯 stdlib HTTP**：手写 MCP Streamable HTTP 服务端，无需 uvicorn/pydantic（Termux 上免 Rust 编译）
 - **安全解析**：sympy `parse_expr` + 函数白名单，绝不 `eval`；支持 `^` 幂运算（控制工程习惯写法）
 - **对话内显示图片**：工具返回文本携带 markdown 图片引用，模型嵌入回复后 RikkaHub 直接渲染；同时避免向模型服务商转发图片（设计决策见 [CHANGELOG](CHANGELOG.md) v1.3.0）
-- **runit 托管 / 手动启动两相宜**：可后台托管，也可 `mathplot` 一条命令手动启动
-- **自动清理**：图片保留最近 100 张，崩溃自动重启（runit 模式）
+- **中文渲染**：自动加载 Android 系统 Noto Sans CJK 字体（matplotlib 3.11 实测支持 ttc），中文标题/图例不再是方框
+- **连接稳定性**：GET /mcp 按规范返回 405（不支持推送流），规避 RikkaHub+kotlin-sdk 的 SSE 重连耗尽导致连接永久卡死的 bug（详见 [CHANGELOG](CHANGELOG.md) v1.5.0）；访问日志统一落盘 `~/mathplot_mcp.log`
+- **手动启动**：`mathplot` 一条命令启动，适合日常用机按需运行（runit 托管可选）
 
 ## 🛠 工具清单
 
@@ -59,7 +60,7 @@ pip install sympy control
 
 ### 3. 启动方式（任选）
 
-**手动（推荐）**——与 `szk` 同款体验：
+**手动启动（推荐，适合日常用机按需运行）**：
 
 ```bash
 mathplot      # 前台启动，Ctrl+C 停止
@@ -106,10 +107,11 @@ RikkaHub (Android)
 mathplot_mcp.py  ── 纯 stdlib: http.server.ThreadingHTTPServer
    ├── JSON-RPC: initialize / tools/list / tools/call / ping
    ├── sympy: 表达式安全解析（白名单 + convert_xor，绝不 eval）
-   ├── matplotlib: PNG 渲染（Agg 后端）
+   ├── matplotlib: PNG 渲染（Agg 后端 + Noto Sans CJK 中文回退链）
    ├── python-control: 根轨迹/波特/奈奎斯特/尼科尔斯/阶跃/零极点
    ├── /plots/<id>.png 静态服务（图片 URL 跟随请求 Host 自适应）
-   └── 图片自动清理（保留最近 100 张）
+   ├── GET /mcp → 405（无推送流需求；规避 RikkaHub SSE 重连 bug）
+   └── 图片自动清理（保留最近 100 张）+ 访问日志落盘（~2MB 滚动）
 ```
 
 **关键设计**：工具结果**只返回文本**（不返回 MCP image 内容块），文本中带 markdown 图片引用。这样：
@@ -121,13 +123,14 @@ mathplot_mcp.py  ── 纯 stdlib: http.server.ThreadingHTTPServer
 
 ```text
 mathplot-mcp/
-├── mathplot_mcp.py          # 服务器主程序（v1.4.1）
+├── mathplot_mcp.py          # 服务器主程序（v1.5.0）
 ├── mathplot-up.sh           # Termux 手动启动脚本
 ├── bashrc_new               # .bashrc 别名片段（mathplot 命令）
 ├── README.md
 ├── CHANGELOG.md             # 开发日志
 └── docs/
-    └── 原始设计记录.md       # 项目起源：设计方案讨论（含早期 RikkaHub 调研）
+    ├── 原始设计记录.md       # 项目起源：设计方案讨论（含早期 RikkaHub 调研）
+    └── 2026-08-21-诊断报告-连接与中文渲染.md
 ```
 
 ## ⚖️ 说明
