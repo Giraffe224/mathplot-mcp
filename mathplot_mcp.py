@@ -66,8 +66,8 @@ matplotlib.rcParams["font.sans-serif"] = (
 # CJK 字体缺 U+2212（数学负号），改用 ASCII 减号避免告警
 matplotlib.rcParams["axes.unicode_minus"] = False
 
-import numpy as np
-from sympy import (
+import numpy as np  # noqa: E402 — 必须位于 matplotlib.use("Agg") 与字体配置之后
+from sympy import (  # noqa: E402
     Eq,
     S,
     Symbol,
@@ -86,7 +86,7 @@ from sympy import (
     symbols,
     tan,
 )
-from sympy.parsing.sympy_parser import (
+from sympy.parsing.sympy_parser import (  # noqa: E402
     convert_xor,
     implicit_multiplication_application,
     parse_expr,
@@ -551,14 +551,14 @@ def analyze_formula(expr: str):
         d = sm.diff(f, x)
         crit = []
         with contextlib.suppress(Exception):
-                sols = sm.solve(d, x)
-                for v in sols:
-                    if v.is_real:
-                        try:
-                            yv = float(f.subs(x, v))
-                            crit.append(f"x = {float(v):.4g} 处 y = {yv:.4g}")
-                        except Exception:
-                            crit.append(f"x = {float(v):.4g}")
+            sols = sm.solve(d, x)
+            for v in sols:
+                if v.is_real:
+                    try:
+                        yv = float(f.subs(x, v))
+                        crit.append(f"x = {float(v):.4g} 处 y = {yv:.4g}")
+                    except Exception:
+                        crit.append(f"x = {float(v):.4g}")
         if crit:
             add("驻点（f'(x)=0）", crit[:8])
         lines.insert(0, f"导数: f'(x) = {latex(d)}")
@@ -569,8 +569,8 @@ def analyze_formula(expr: str):
         lims = []
         for infp in (sm.oo, -sm.oo):
             with contextlib.suppress(Exception):
-                    v = sm.limit(f, x, infp)
-                    lims.append(f"x→{infp}: {v if v.is_number else latex(v)}")
+                v = sm.limit(f, x, infp)
+                lims.append(f"x→{infp}: {v if v.is_number else latex(v)}")
         if lims:
             add("无穷远极限", lims)
 
@@ -839,7 +839,7 @@ def plot_step_response(transfer_function: str, t_end: float = 10.0, title: str =
     final = 0.0
     peak = 0.0
     tpk = 0.0
-    with contextlib.suppress((TypeError, ValueError)):
+    with contextlib.suppress(TypeError, ValueError):
         if y.size:
             final = float(y[-1])
             peak = float(np.max(y))
@@ -1173,8 +1173,8 @@ def handle_jsonrpc(msg):
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": (
-            "数学与控制工程绘图工具集。表达式中 ^ 表示乘方；"
-            "各绘图工具的 title 参数支持中文，建议用中文描述图表。"
+                    "数学与控制工程绘图工具集。表达式中 ^ 表示乘方；"
+                    "各绘图工具的 title 参数支持中文，建议用中文描述图表。"
                 ),
             },
         }, False
@@ -1258,10 +1258,7 @@ def _log_line(msg: str):
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
     with _LOG_LOCK:
         with contextlib.suppress(OSError):
-            if (
-                os.path.exists(LOG_FILE)
-                and os.path.getsize(LOG_FILE) > LOG_FILE_MAX
-            ):
+            if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_FILE_MAX:
                 os.replace(LOG_FILE, LOG_FILE + ".old")
             with open(LOG_FILE, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
