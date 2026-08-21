@@ -15,7 +15,7 @@
 - **中文渲染**：自动加载 Android 系统 Noto Sans CJK 字体（matplotlib 3.11 实测支持 ttc），中文标题/图例不再是方框
 - **连接稳定性**：GET /mcp 按规范返回 405（不支持推送流），规避 RikkaHub+kotlin-sdk 的 SSE 重连耗尽导致连接永久卡死的 bug（详见 [CHANGELOG](CHANGELOG.md) v1.5.0）；访问日志统一落盘 `~/mathplot_mcp.log`
 - **并发安全**：绘图使用 matplotlib OO API（`Figure`），无 pyplot 全局状态，并发工具调用互不干扰（v1.6.0）
-- **手动启动**：`mathplot` 一条命令启动，适合日常用机按需运行（runit 托管可选）
+- **手动启动**：`mathplot` 一条命令启动，支持 `-k`（停止）、`-s`（状态）、`-d`（后台）；防重复启动，已运行时给出操作提示而非报错
 
 ## 🛠 工具清单
 
@@ -64,8 +64,10 @@ pip install sympy control
 **手动启动（推荐，适合日常用机按需运行）**：
 
 ```bash
-mathplot      # 前台启动，Ctrl+C 停止
-mathplot -d   # 后台启动，日志 ~/mathplot_mcp.log
+mathplot         # 前台启动（Ctrl+C 停止）
+mathplot -d      # 后台启动，日志 ~/mathplot_mcp.log
+mathplot -k      # 停止服务器
+mathplot -s      # 查看状态 + 健康检查
 ```
 
 **runit 托管**（可选，崩溃自动重启、会话自启）：
